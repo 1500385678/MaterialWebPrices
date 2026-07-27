@@ -1,0 +1,21 @@
+# 统一行尾 - 所有文本文件用 LF,Windows checkout 时用 CRLF
+* text=auto eol=lf
+
+# Python
+*.py text eol=lf
+
+# Markdown
+*.md text eol=lf
+
+# SQL
+*.sql text eol=lf
+
+# Windows 脚本 - 保持 CRLF 避免 PowerShell 解析问题
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 文本数据
+*.txt text eol=lf
+*.csv text eol=lf
+*.json text eol=lf

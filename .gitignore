@@ -1,0 +1,40 @@
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE 备份副本(日期时间戳模式)
+*-备份[0-9]*.md
+*-备份[0-9]*.css
+*-备份[0-9]*.html
+
+# 草稿
+drafts/
+*.tmp
+*.log
+
+# 临时输出
+output/
+dist/
+build/
+
+# 大文件(不追踪 binary blobs)
+*.xlsx
+!init_*.xlsx
+
+# 本地调试脚本
+scripts/_debug_*.py
+scripts/_check_*.py
+scripts/_verify_*.py
