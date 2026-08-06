@@ -20,7 +20,7 @@ updated: 2026-06-26
 
 ## 上级
 
-- [[../06-Material/Mobile/PricesLibControl]] _(v2 路径;原 03_建筑材料Control 已废)_
+- [[../06-Material/Mobile/PricesLibControl]] _(v2 路径,Defense/06-Material/Mobile/PricesLib)_
 
 ## 平级
 

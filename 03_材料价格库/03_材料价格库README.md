@@ -15,7 +15,7 @@ updated: 2026-06-27
 
 ## 跨 Defense 数据源
 
-**实际数据存放位置(v2):`Defense/06-Material/Mobile/PricesLib/`** _(原 03_建筑材料 路径已废)_
+**实际数据存放位置(v2):`Defense/06-Material/Mobile/PricesLib/`** _(现役路径)_
 
 SpaceLib 不存原始数据,只做**索引和决策路径**。
 

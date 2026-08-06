@@ -1,10 +1,10 @@
-"""Debug 解析: 屋面 + 幕墙"""
+"""Debug 解析: 屋面 + 幕墙 · v1.3 改:删除 Windows 硬编路径,改用 __file__ 相对路径"""
 import sys
-sys.path.insert(0, r'D:\Mac\Mac\Mac\workteam\05_space\03_architect\Defense\06-Material\Attack\价格库\scripts')
-from seed_prices import parse_simple_table, parse_section_economic
 from pathlib import Path
-
-BASE = Path(r'D:\Mac\Mac\Mac\workteam\05_space\03_architect\Defense\06-Material\Attack\价格库')
+# 用 __file__ 相对路径,跨 macOS/Windows/Linux 通用
+BASE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE / 'scripts'))
+from seed_prices import parse_simple_table, parse_section_economic
 
 # 屋面
 text = (BASE / '屋面系统-价格区间.md').read_text(encoding='utf-8')

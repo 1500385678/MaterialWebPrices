@@ -78,6 +78,14 @@ def parse_simple_table(text, source_doc, category='',
       - 同表(同一组表头分隔 |---|---| 后到下一个非表行)所有数据行 col_count 必须一致
       - 不一致 raise ValueError,阻止"33 vs 38 漂移"型静默丢行
       - 序号列(1./1.1 等)若在首列,会被自动剥离,剥离后剩余列数才参与 schema check
+
+    v1.3 解析漂移案例(外墙 33 vs 38):
+      - 历史问题:v1.0 解析外墙时,数据行 col_count 不一致(如 4 列 vs 3 列),price_col=1
+        在 4 列行上指向"材料单价",在 3 列行上却指向"施工造价" → 同一文件内价列语义漂移
+      - 修复:v1.2 的 schema check 强制 col_count 一致,v1.3 加更细的 price_col 列语义校验
+        - price_col 必须 < table_first_row_count(否则报"price_col 越界")
+        - 在 main() 里,外墙文件被解析两次(price_col=1=材料单价, price_col=2=施工造价),
+          两次解析都必须通过 schema check 才能入库
     """
     rows = []
     current_section = ''
@@ -133,6 +141,14 @@ def parse_simple_table(text, source_doc, category='',
         # v1.2 严格 schema check: 同表所有数据行(剥序号后)col_count 必须一致
         if table_first_row_count is None:
             table_first_row_count = len(cols)
+            # v1.3 新增:price_col 越界检查
+            if price_col >= table_first_row_count:
+                raise ValueError(
+                    f'parse_simple_table 严格 schema 检查失败: '
+                    f'{source_doc} 第 {table_index} 个表({current_section}) '
+                    f'price_col={price_col} >= 表首行 col_count={table_first_row_count},'
+                    f'价格列越界,会静默丢价。'
+                )
         elif len(cols) != table_first_row_count:
             raise ValueError(
                 f'parse_simple_table 严格 schema 检查失败: '
