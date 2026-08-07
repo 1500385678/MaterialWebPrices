@@ -189,17 +189,19 @@ def parse_simple_table(text, source_doc, category='',
 def parse_section_economic(text, source_doc, category='', default_unit='元/m²'):
     """
     找 ### xxx 段,每个段下找 ### 🔸 经济属性 子段,提取 **材料单价** / **施工造价** / **综合造价**
-    P0 修复: 改用独立 h2/h3/h4 pattern(原 pattern 让 h3 的 content 只剩换行,拿不到 h4 子段);
-    对 h3 块下所有 h4 子段都跑 _extract_econ(性能参数段常把价格直接列在 #### 🔸 性能参数 下)。
+
+    v1.3 修复(R27 P0):
+      - h3 直接 fallback: 遍历到 hashes==3 (### 1.x 材料) 时,即使 h4 没"经济属性"标题,
+        也对 h3_content(剥 h4 后剩余部分)跑 _extract_econ,覆盖"h3 直接跟 bullet 价格"的情况
+      - 横表 fallback: 1.4 环氧地坪 / PVC地板 / 橡胶地板 段把价格放在 markdown 表格行里
+        (| 材料单价 | 30~80 | 50~200 | 150~400 |),bullet regex 抓不到,新增 _extract_econ_table 处理
+      - h3_content 跑前先把 h4 子段剥掉,避免与下面 h4 循环重复入库
     """
     rows = []
     # 独立 pattern: h2/h3/h4 各自独立,避免互相吞 content
     h2_pat = re.compile(r'^##\s+([^\n]+)\n(.*?)(?=^##\s+|\Z)', re.MULTILINE | re.DOTALL)
     h3_pat = re.compile(r'^###\s+([^\n]+)\n(.*?)(?=^###\s+|\Z)', re.MULTILINE | re.DOTALL)
     h4_pat = re.compile(r'^####\s+([^\n]+)\n(.*?)(?=^#{2,4}\s+|\Z)', re.MULTILINE | re.DOTALL)
-
-    # 收集所有 h2 标题(用于 full_name 拼接)
-    h2_titles = [m.group(1).strip() for m in h2_pat.finditer(text)]
 
     def find_h2_before(h3_start):
         last = ''
@@ -215,21 +217,24 @@ def parse_section_economic(text, source_doc, category='', default_unit='元/m²'
         h3_content = m3.group(2)
         h2_title = find_h2_before(m3.start())
 
-        # 幕墙风格:### 🔸 经济属性 直接是段(content 是该段下的实际内容)
-        if '经济属性' in h3_title:
-            full_name = h2_title
-            _extract_econ(rows, h3_content, full_name, default_unit)
-            continue
+        # 段名: ### 🔸 经济属性 用 h2 名;其他用 h2/h3 拼接(去掉 🔸 装饰)
+        full_name = (h2_title if '经济属性' in h3_title
+                     else f'{h2_title} / {h3_title}'.replace('🔸 ', '').strip())
 
-        # 室内风格 / fallback: 找 h3 块下所有 h4 子段,每个都跑 _extract_econ
-        # 修复前: 只在 h4 标题含'经济属性'时跑,导致 2.1/2.2/2.3/2.4/3.1-3.4 (价格列在
-        #         #### 🔸 性能参数 下)全部漏抽
-        # 修复后: 对所有 h4 子段都跑一次(原"经济属性"h4 不会重复,因为它有
-        #         **材料单价** 等也会被抓到——但允许重复,因为每档独立入库)
+        # 1. h3 直接 fallback(R27 改法 1):
+        #    把 h4 子段内容先剥掉,避免与下面 h4 循环重复入库;
+        #    对剩下 h3_content(若有 bullet 形式价格)跑一次 _extract_econ
+        h3_content_no_h4 = h4_pat.sub('', h3_content)
+        _extract_econ(rows, h3_content_no_h4, full_name, default_unit)
+
+        # 2. h4 子段循环(覆盖 2.1/2.2/2.3/2.4/3.1-3.4 这 8 段:价格列在 #### 🔸 性能参数 下)
         for m4 in h4_pat.finditer(h3_content):
             h4_content = m4.group(2)
-            full_name = f'{h2_title} / {h3_title}'.replace('🔸 ', '').strip()
             _extract_econ(rows, h4_content, full_name, default_unit)
+
+        # 3. 横表 fallback(R27 改法延伸):
+        #    1.4 段价格在 markdown 表格行里,扫 h3_content 一次即可(包含 h4 内的表)
+        _extract_econ_table(rows, h3_content, full_name, default_unit)
     return rows
 
 
@@ -254,6 +259,53 @@ def _extract_econ(rows, content, full_name, default_unit):
                     'unit': default_unit, 'pmin': pmin, 'pmax': pmax,
                     'price_type': price_type, 'section': full_name,
                 })
+
+
+def _extract_econ_table(rows, content, full_name, default_unit):
+    """
+    段内横表 fallback(R27 v1.3 修复):
+    1.4 环氧地坪 / PVC地板 / 橡胶地板 段把价格放在 markdown 表格行里:
+        | 对比项   | 环氧地坪   | PVC地板     | 橡胶地板     |
+        | 材料单价 | 30~80 元/m² | 50~200 元/m² | 150~400 元/m² |
+        | 施工造价 | 50~150 元/m² | 60~180 元/m² | 200~400 元/m² |
+    bullet regex 抓不到,扫横表行:首列含"材料单价/施工造价/综合造价"且 >= 3 列的行,
+    后面每列(每个材料)各生成一行入库(material_name = full_name / 列名)。
+    """
+    price_keys = ('材料单价', '施工造价', '综合造价')
+    header_keys = ('对比项', '类别', '材料', '规格', '项目', '项', '类型', '等级', '名称')
+    lines = content.split('\n')
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s.startswith('|'): continue
+        cols = [c.strip() for c in s.split('|') if c.strip() != '']
+        if len(cols) < 3: continue
+        if cols[0] not in price_keys: continue
+        # 找表头(向上搜索,跳过 |---|---| 分隔行,直到首个列数一致的 | xxx | ... | 行;
+        # 1.4 横表里表头可能在数据行 5-10 行之上,需要 1-15 行搜索范围)
+        col_names = None
+        for j in range(i-1, max(0, i-15), -1):
+            head = lines[j].strip()
+            if not head.startswith('|'): continue
+            if all(re.match(r'^[\-:\s]+$', c) for c in head.split('|') if c.strip() != ''):
+                continue  # 跳过表头分隔
+            hcols = [c.strip() for c in head.split('|') if c.strip() != '']
+            if len(hcols) == len(cols) and hcols[0] in header_keys:
+                col_names = hcols[1:]
+                break
+        if not col_names:
+            col_names = [f'档{idx+1}' for idx in range(len(cols) - 1)]
+        price_type = cols[0]
+        for idx, raw in enumerate(cols[1:]):
+            col_name = col_names[idx] if idx < len(col_names) else f'档{idx+1}'
+            pmin, pmax = parse_price_range(raw)
+            if pmin is None: continue
+            material_name = f'{full_name} / {col_name}'
+            rows.append({
+                'material_name': material_name, 'spec': material_name,
+                'unit': parse_unit(raw) or default_unit,
+                'pmin': pmin, 'pmax': pmax,
+                'price_type': price_type, 'section': full_name,
+            })
 
 
 # ============================================================
