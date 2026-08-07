@@ -189,68 +189,71 @@ def parse_simple_table(text, source_doc, category='',
 def parse_section_economic(text, source_doc, category='', default_unit='元/m²'):
     """
     找 ### xxx 段,每个段下找 ### 🔸 经济属性 子段,提取 **材料单价** / **施工造价** / **综合造价**
+    P0 修复: 改用独立 h2/h3/h4 pattern(原 pattern 让 h3 的 content 只剩换行,拿不到 h4 子段);
+    对 h3 块下所有 h4 子段都跑 _extract_econ(性能参数段常把价格直接列在 #### 🔸 性能参数 下)。
     """
     rows = []
-    # 用 regex 找所有 ##/###/#### 标题 + 内容的配对
-    # 兼容 3 种文档风格:
-    #   - 幕墙:.md  ## h2 大类 → ### 🔸 段 (3 个 #)
-    #   - 室内:.md  ## h2 → ### h3 章节 → #### 🔸 段 (4 个 #)
-    pattern = re.compile(r'^(#{2,4})\s+([^\n]+)\n(.*?)(?=^#{2,4}\s+|\Z)', re.MULTILINE | re.DOTALL)
-    h2 = ''     # 大类(如 "1. 石材")
-    h3 = ''     # 小节(如 "1.1 实木地板",或 "🔸 立面属性")
-    for m in pattern.finditer(text):
-        hashes = len(m.group(1))
-        title = m.group(2).strip()
-        content = m.group(3)
-        if hashes == 2:
-            h2 = title
-            h3 = ''
+    # 独立 pattern: h2/h3/h4 各自独立,避免互相吞 content
+    h2_pat = re.compile(r'^##\s+([^\n]+)\n(.*?)(?=^##\s+|\Z)', re.MULTILINE | re.DOTALL)
+    h3_pat = re.compile(r'^###\s+([^\n]+)\n(.*?)(?=^###\s+|\Z)', re.MULTILINE | re.DOTALL)
+    h4_pat = re.compile(r'^####\s+([^\n]+)\n(.*?)(?=^#{2,4}\s+|\Z)', re.MULTILINE | re.DOTALL)
+
+    # 收集所有 h2 标题(用于 full_name 拼接)
+    h2_titles = [m.group(1).strip() for m in h2_pat.finditer(text)]
+
+    def find_h2_before(h3_start):
+        last = ''
+        # 顺序遍历,找 start <= h3_start 的最后一个 h2
+        for m in h2_pat.finditer(text):
+            if m.start() > h3_start:
+                break
+            last = m.group(1).strip()
+        return last
+
+    for m3 in h3_pat.finditer(text):
+        h3_title = m3.group(1).strip()
+        h3_content = m3.group(2)
+        h2_title = find_h2_before(m3.start())
+
+        # 幕墙风格:### 🔸 经济属性 直接是段(content 是该段下的实际内容)
+        if '经济属性' in h3_title:
+            full_name = h2_title
+            _extract_econ(rows, h3_content, full_name, default_unit)
             continue
-        if hashes == 3:
-            h3 = title
-            # 幕墙风格:### 🔸 经济属性 直接是段
-            if '经济属性' in title:
-                full_name = h2
-                _extract_econ(rows, content, full_name, default_unit)
-            continue
-        if hashes == 4 and '经济属性' in title:
-            # 室内风格:#### 🔸 经济属性 段
-            # 材料名 = h2 + h3
-            full_name = f'{h2} / {h3}' if h3 else h2
-            full_name = full_name.replace('🔸 ', '').strip()
-            _extract_econ(rows, content, full_name, default_unit)
+
+        # 室内风格 / fallback: 找 h3 块下所有 h4 子段,每个都跑 _extract_econ
+        # 修复前: 只在 h4 标题含'经济属性'时跑,导致 2.1/2.2/2.3/2.4/3.1-3.4 (价格列在
+        #         #### 🔸 性能参数 下)全部漏抽
+        # 修复后: 对所有 h4 子段都跑一次(原"经济属性"h4 不会重复,因为它有
+        #         **材料单价** 等也会被抓到——但允许重复,因为每档独立入库)
+        for m4 in h4_pat.finditer(h3_content):
+            h4_content = m4.group(2)
+            full_name = f'{h2_title} / {h3_title}'.replace('🔸 ', '').strip()
+            _extract_econ(rows, h4_content, full_name, default_unit)
     return rows
 
 
 def _extract_econ(rows, content, full_name, default_unit):
-    """从经济属性 content 里抽 3 类价格"""
-    mat_match = re.search(r'\*\*材料单价\*\*[：:](.+?)(?=\n|$)', content)
-    lab_match = re.search(r'\*\*施工造价\*\*[：:](.+?)(?=\n|$)', content)
-    comp_match = re.search(r'\*\*综合造价\*\*[：:](.+?)(?=\n|$)', content)
-    if mat_match:
-        pmin, pmax = parse_price_range(mat_match.group(1))
-        if pmin is not None:
-            rows.append({
-                'material_name': full_name, 'spec': full_name,
-                'unit': default_unit, 'pmin': pmin, 'pmax': pmax,
-                'price_type': '材料单价', 'section': full_name,
-            })
-    if lab_match:
-        pmin, pmax = parse_price_range(lab_match.group(1))
-        if pmin is not None:
-            rows.append({
-                'material_name': full_name, 'spec': full_name,
-                'unit': default_unit, 'pmin': pmin, 'pmax': pmax,
-                'price_type': '施工造价', 'section': full_name,
-            })
-    if comp_match:
-        pmin, pmax = parse_price_range(comp_match.group(1))
-        if pmin is not None:
-            rows.append({
-                'material_name': full_name, 'spec': full_name,
-                'unit': default_unit, 'pmin': pmin, 'pmax': pmax,
-                'price_type': '综合造价', 'section': full_name,
-            })
+    """从经济属性 content 里抽 3 类价格(每档一行;P0 修复:findall 抓完所有 N 行)"""
+    # P0 修复 1: regex 容忍冒号后空白([：:]+\s*)
+    # P0 修复 2: re.findall 抓完所有 N 行(单行多档拆解是 P1 范畴)
+    for price_type, base_pat in [
+        ('材料单价', r'\*\*材料单价\*\*[：:]+\s*([^\n]+)'),
+        ('施工造价', r'\*\*施工造价\*\*[：:]+\s*([^\n]+)'),
+        ('综合造价', r'\*\*综合造价\*\*[：:]+\s*([^\n]+)'),
+    ]:
+        matches = re.findall(base_pat, content)
+        for idx, raw in enumerate(matches):
+            # 多档时用 #i 区分后缀,避免 material_name 重复入库
+            suffix = f' #{idx+1}' if len(matches) > 1 else ''
+            label = f'{full_name}{suffix}'
+            pmin, pmax = parse_price_range(raw)
+            if pmin is not None:
+                rows.append({
+                    'material_name': label, 'spec': label,
+                    'unit': default_unit, 'pmin': pmin, 'pmax': pmax,
+                    'price_type': price_type, 'section': full_name,
+                })
 
 
 # ============================================================
