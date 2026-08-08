@@ -68,11 +68,15 @@ def parse_unit(s):
 def parse_simple_table(text, source_doc, category='',
                       name_col=0, spec_col=0, unit_col=1, price_col=2,
                       has_unit_col=True, skip_first_data_row=True,
-                      has_notes_col=True):
+                      has_notes_col=True,
+                      section_blacklist=('快速查表', '常见问题', '关联知识', '核心要点')):
     """
     状态机解析 | col | col | 表
     name_col / spec_col / unit_col / price_col 都在 0-indexed 数据列
     skip_first_data_row: 跳过首行(通常表头) - 但实际表头是表头本身,首数据行是表头
+    section_blacklist: 当前 ##/### 章节名命中任一黑名单词时,所有表行不入库
+                       (R28 P1 修复:外墙 33 vs 38 漂移 — ## 快速查表 段 5 行预算档被当价格入库,
+                        ## 常见问题/## 关联知识 段也可能含表格行但非价格)
 
     v1.2 严格 schema 检查:
       - 同表(同一组表头分隔 |---|---| 后到下一个非表行)所有数据行 col_count 必须一致
@@ -86,6 +90,8 @@ def parse_simple_table(text, source_doc, category='',
         - price_col 必须 < table_first_row_count(否则报"price_col 越界")
         - 在 main() 里,外墙文件被解析两次(price_col=1=材料单价, price_col=2=施工造价),
           两次解析都必须通过 schema check 才能入库
+      - v1.5 加 section_blacklist:## 快速查表/## 常见问题/## 关联知识/## 核心要点 段
+        的表格行直接跳过不入库,从源头杜绝"段外行进价"漂移
     """
     rows = []
     current_section = ''
@@ -102,6 +108,13 @@ def parse_simple_table(text, source_doc, category='',
             current_section = s.lstrip('# ').strip()
             in_table = False
             table_first_row_count = None  # v1.2: 新章节,重置 schema 基线
+            continue
+        # v1.5: 黑名单章节内的所有行直接跳过(不更新 in_table/table_first_row_count,
+        #       保持基线;但避免数据行污染 schema check)
+        if any(bad in current_section for bad in section_blacklist):
+            if not s.startswith('|'):
+                in_table = False
+                table_first_row_count = None
             continue
         if not s.startswith('|'):
             in_table = False
@@ -583,8 +596,17 @@ def main():
         r['unit'] = '元/m²'
         r['price_type'] = '施工造价'
     n2 = insert_material_spec_prices(conn, rows_lab, DOCS['外墙材料-价格区间.md'][0], '幕墙/外墙', '施工造价')
+    # v1.5 P1 解析漂移检测(R28):外墙 材料单价 与 施工造价 行数必须一致(33==33),
+    # 漂移(33 vs 38)典型是快速查表段 5 行被施工造价分支误抓 → section_blacklist 之后
+    # 应自动对齐;若还漂移,raise 阻止入库
+    if n1 != n2:
+        raise ValueError(
+            f'外墙材料-价格区间 解析漂移(R28 P1):材料单价 {n1} 行 vs 施工造价 {n2} 行,'
+            f'两者必须一致(典型 33==33)。差异来源:section_blacklist 未生效,'
+            f'或价格列漂移到其他段。'
+        )
     summary['外墙材料-价格区间'] = n1 + n2
-    print(f'[seed] 外墙: {n1} (材料单价) + {n2} (施工造价) = {n1+n2} 行')
+    print(f'[seed] 外墙: {n1} (材料单价) + {n2} (施工造价) = {n1+n2} 行 [drift-check OK]')
 
     # 3. 室内材料-价格区间.md (段式)
     text = (BASE / '室内材料-价格区间.md').read_text(encoding='utf-8')

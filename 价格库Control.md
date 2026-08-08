@@ -8,22 +8,28 @@ tags:
   - 营长
   - 建筑师助手
 created: 2026-06-26
-updated: 2026-06-26
+updated: 2026-08-09
 ---
 
 # 🎖️ 营长 · 价格库
 
 > **军衔**:营长(第 5 级 · Mac → 军长 → 师长 → 旅长 → 团长 → 营长)
-> **路径**:`Defense/03_建筑材料/价格库/`
+> **路径**:`Defense/06-Material/Mobile/PricesLib/`
 > **职责**:价格库
 
 ## 上级
 
-- [[../03_建筑材料Control]]
+- [[../00_DefenseControl]]
 
 ## 平级
 
-_(暂无)_
+- [[../01-Architizer/01-ArchitizerControl]]
+- [[../02-Structural/02-StructuralControl]]
+- [[../03-ArchDaily/03-ArchDailyControl]]
+- [[../04-Construction/04-ConstructionControl]]
+- [[../05-Spec/05-SpecControl]]
+- [[../07-Archidaily/07-ArchidailyControl]]
+- [[../03_材料价格库/03_材料价格库Control]]
 
 ## 下属
 
@@ -37,4 +43,5 @@ _(暂无)_
 ---
 
 > 变更记录
+> - 2026-08-09 · 修复路径错位(`Defense/03_建筑材料/价格库/` → `Defense/06-Material/Mobile/PricesLib/`);上级 [[../03_建筑材料Control]] → [[../00_DefenseControl]] · materialwebprices Coder (批 3 夜间迭代)
 > - 2026-06-26 · 创建 control 文件(军衔:营长) · Macmini
