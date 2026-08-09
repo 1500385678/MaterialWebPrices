@@ -21,6 +21,14 @@ BASE = Path(__file__).parent.parent
 DB_PATH = BASE / 'prices.db'
 SCHEMA = BASE / 'init_schema.sql'
 
+# v1.6 P0 (R30): 路径一致性 assert — BASE 必须落在 Defense/06-Material/Mobile/PricesLib/,
+# 若种子脚本被错误地放在 SpaceLib/03_建筑材料/... 等历史位置,启动即崩,防止"读老路径 + 写新库"双线分离
+assert BASE.name == 'PricesLib' and '06-Material' in str(BASE), (
+    f'seed_prices.py BASE 路径错位: {BASE}。期望 Defense/06-Material/Mobile/PricesLib/,'
+    f'实际 BASE.name={BASE.name!r}。修复方法:把 seed_prices.py 放到 PricesLib/scripts/ 下,'
+    f'或更新 __file__ 相对路径。'
+)
+
 DOCS = {
     '材料价格总库-原始数据.md': ('材料价格总库-原始数据.md', '结构/装饰/设备'),
     '外墙材料-价格区间.md':    ('外墙材料-价格区间.md', '幕墙/外墙'),
@@ -37,6 +45,13 @@ def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    # v1.6 P0 (R29): DROP + CREATE 而非 IF NOT EXISTS,确保 schema 变更(CHECK 约束 / 索引)
+    # 立即生效。代价是重跑要全表重建,但 prices.db 是种子库(< 500 行),可接受
+    for tbl in ('material_spec_prices', 'suppliers', 'supplier_quotes', 'cost_breakdowns',
+                'regions'):
+        cur.execute(f'DROP TABLE IF EXISTS {tbl}')
+    conn.commit()
     conn.executescript(open(SCHEMA, encoding='utf-8').read())
     conn.commit()
     return conn
@@ -252,9 +267,18 @@ def parse_section_economic(text, source_doc, category='', default_unit='元/m²'
 
 
 def _extract_econ(rows, content, full_name, default_unit):
-    """从经济属性 content 里抽 3 类价格(每档一行;P0 修复:findall 抓完所有 N 行)"""
+    """从经济属性 content 里抽 3 类价格(每档一行;P0 修复:findall 抓完所有 N 行;P1:多档 / 拆行)
+
+    v1.6 P1 修复 (R31):
+    - 幕墙 8 大类每类有 2-4 档变体(国产/进口/规格/厚度),原 parser 只抓第一个价格区间,后面
+      全部被吞(如 石材 "150~600 国产" / "300~2000 进口" 只入第 1 档)。
+    - 改法:每行(每类价格段)按 / 或 ; 拆成 N 段,每段生成一行入库。
+      - 段内若有 括号变体 (e.g. "（国产花岗岩）"),拼到 material_name 后缀(避免重名)
+      - 段内若无 括号 (e.g. "铝单板 180~350 元/m²"),用 #1/#2/#3/#4 区分
+    """
     # P0 修复 1: regex 容忍冒号后空白([：:]+\s*)
-    # P0 修复 2: re.findall 抓完所有 N 行(单行多档拆解是 P1 范畴)
+    # P0 修复 2: re.findall 抓完所有 N 行
+    # P1 修复 3: 单行内 / 或 ; 拆多档,每档一行
     for price_type, base_pat in [
         ('材料单价', r'\*\*材料单价\*\*[：:]+\s*([^\n]+)'),
         ('施工造价', r'\*\*施工造价\*\*[：:]+\s*([^\n]+)'),
@@ -262,14 +286,47 @@ def _extract_econ(rows, content, full_name, default_unit):
     ]:
         matches = re.findall(base_pat, content)
         for idx, raw in enumerate(matches):
-            # 多档时用 #i 区分后缀,避免 material_name 重复入库
-            suffix = f' #{idx+1}' if len(matches) > 1 else ''
-            label = f'{full_name}{suffix}'
-            pmin, pmax = parse_price_range(raw)
-            if pmin is not None:
+            # P1: 按 / 或 ; 拆多档(国标全角半角都支持)
+            # 关键:必须先保护两类非 split-boundary 的 / :
+            #   1) 单位中的 /(如 元/m²) - 元/<非数字>
+            #   2) 变体括号内的 /(如 (进口花岗岩/大理石)) - （含/的变体）
+            # 然后用普通 split,最后还原
+            # 用 lambda 避免 re.sub 解析 \x00 报"bad escape"
+            raw_protected = raw.strip()
+            # 1) 保护单位:元/<unit> → 元<placeholder><unit> (unit 不含数字/分号/空格)
+            raw_protected = re.sub(r'元/([^\s\d;]+)', lambda m: '元\x00' + m.group(1), raw_protected)
+            # 2) 保护变体括号内的 /:（...<slash>...）→ （...<placeholder>...）
+            # 用平衡匹配:从 ( 开始,到匹配的 ) 结束(简化版:非贪婪 + 无嵌套)
+            def protect_paren(m):
+                inner = m.group(1)
+                return '（' + inner.replace('/', '\x00') + '）'
+            raw_protected = re.sub(r'（([^（）]*)）', protect_paren, raw_protected)
+            tiers = re.split(r'\s*/\s*|\s*;\s*', raw_protected)
+            tiers = [t.replace('\x00', '/').strip() for t in tiers]
+            for t_idx, tier in enumerate(tiers):
+                tier = tier.strip()
+                if not tier:
+                    continue
+                # 提取括号变体: e.g. "150~600 元/m²（国产花岗岩）" → "国产花岗岩"
+                var_m = re.search(r'[\(（]\s*([^\)）]+?)\s*[\)）]', tier)
+                var = var_m.group(1) if var_m else ''
+                # 去括号后的纯价格文本 (e.g. "150~600 元/m²")
+                price_text = re.sub(r'[\(（][^\)）]*[\)）]', '', tier).strip()
+                pmin, pmax = parse_price_range(price_text)
+                if pmin is None:
+                    continue
+                # 多档时:有变体拼变体,无变体用 #i 区分
+                if len(tiers) > 1:
+                    if var:
+                        label = f'{full_name}（{var}）'
+                    else:
+                        label = f'{full_name} #{t_idx+1}'
+                else:
+                    label = full_name
+                unit = parse_unit(price_text) or default_unit
                 rows.append({
                     'material_name': label, 'spec': label,
-                    'unit': default_unit, 'pmin': pmin, 'pmax': pmax,
+                    'unit': unit, 'pmin': pmin, 'pmax': pmax,
                     'price_type': price_type, 'section': full_name,
                 })
 
@@ -507,6 +564,47 @@ def allocate_code(category, existing_codes):
 
 
 # ============================================================
+# brand_tier 推断 (P0 R29)
+# ============================================================
+def infer_brand_tier(material_name, spec='', notes='', section=''):
+    """根据 material_name / spec / section / notes 推断品牌档位。
+
+    v1.6 P0 修复 (R29):
+    - 历史 295/295 行全为 '中端'(schema DEFAULT 兜底),前端"经济/中端/中高端/高端/旗舰" 5 档
+      实际只有 1 档可用,经济/旗舰档查询 404。
+    - 推断规则(优先级 高→低):
+      1. 旗舰/5x 💰  → 旗舰
+      2. (进口+高端) 或 4x 💰  → 高端
+      3. 进口 或 中高端 或 3x 💰  → 中高端
+      4. 高端字样  → 高端
+      5. 中端字样 或 1-2x 💰  → 中端
+      6. 经济字样  → 经济
+      7. 默认      → 中端
+    """
+    text = f'{material_name or ""} {spec or ""} {notes or ""} {section or ""}'
+    cnt_money = text.count('💰')
+    if '旗舰' in text or cnt_money >= 5:
+        return '旗舰'
+    if '进口' in text and '高端' in text:
+        return '高端'
+    if cnt_money >= 4:
+        return '高端'
+    if '进口' in text:
+        return '中高端'
+    if '中高端' in text or cnt_money >= 3:
+        return '中高端'
+    if '高端' in text:
+        return '高端'
+    if '中端' in text:
+        return '中端'
+    if '经济' in text:
+        return '经济'
+    if cnt_money >= 1:
+        return '中端'
+    return '中端'
+
+
+# ============================================================
 # insert
 # ============================================================
 def insert_material_spec_prices(conn, rows, source_doc, category, default_price_type='施工造价'):
@@ -518,15 +616,22 @@ def insert_material_spec_prices(conn, rows, source_doc, category, default_price_
         pmin, pmax = r['pmin'], r['pmax']
         price_type = r.get('price_type', default_price_type)
         avg = (pmin + pmax) / 2 if pmin is not None and pmax is not None else None
+        # v1.6 P0 (R29): brand_tier 不再依赖 schema DEFAULT 兜底,先推断
+        brand_tier = infer_brand_tier(
+            r.get('material_name', ''),
+            r.get('spec', ''),
+            r.get('notes', ''),
+            r.get('section', ''),
+        )
         cur.execute('''
             INSERT INTO material_spec_prices
             (material_code, material_name, category, spec, unit,
              unit_price_min, unit_price_max, unit_price_avg, price_type,
-             fluctuation, source_doc, source_section, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             brand_tier, fluctuation, source_doc, source_section, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', [code, r['material_name'], category, r.get('spec', r['material_name']),
               r.get('unit', '元/m²'), pmin, pmax, avg, price_type,
-              r.get('fluctuation', '稳'), source_doc, r.get('section', ''),
+              brand_tier, r.get('fluctuation', '稳'), source_doc, r.get('section', ''),
               r.get('notes', '')])
         inserted += 1
     conn.commit()
@@ -642,8 +747,22 @@ def main():
     text = (BASE / '幕墙系统-价格区间.md').read_text(encoding='utf-8')
     rows = parse_section_economic(text, DOCS['幕墙系统-价格区间.md'][0], category='幕墙', default_unit='元/m²')
     n = insert_material_spec_prices(conn, rows, DOCS['幕墙系统-价格区间.md'][0], '幕墙')
+    # v1.6 P1 (R31): 幕墙 8 大类(石材/金属板/陶板/玻璃/清水混凝土/GRC/UHPC/木饰面/涂料)每类
+    # 至少 2 档(材料单价 + 施工造价),多档后预期 >= 24 行(8 × 3)。若仍 = 16 行(每类 2 行),
+    # 说明多档 / 拆行未生效,log.warn + raise 阻止入库。
+    unique_mains = len({r['material_name'].split('（')[0].split(' #')[0] for r in rows})
+    if n < 24 or unique_mains < 8:
+        import warnings
+        warnings.warn(
+            f'幕墙 8 大类 解析异常 (R31 P1):总 {n} 行,唯一大类 {unique_mains} 个。'
+            f'预期 >= 24 行 / 8 大类。可能多档 / 拆行未生效或 8 大类标题被误吞。'
+        )
+        raise ValueError(
+            f'幕墙解析漂移 (R31 P1):总 {n} 行 < 24 预期 / 大类 {unique_mains} < 8 预期。'
+            f'请检查 _extract_econ 多档 / 拆行 与 h3 标题正则。'
+        )
     summary['幕墙系统-价格区间'] = n
-    print(f'[seed] 幕墙(段式): {n} 行')
+    print(f'[seed] 幕墙(段式·多档拆行): {n} 行 (8 大类 × {n//8} 档均值) [tier-check OK]')
 
     # 6. 门窗系统-价格区间.md (3 列:类型/综合造价/性能与备注)
     text = (BASE / '门窗系统-价格区间.md').read_text(encoding='utf-8')
