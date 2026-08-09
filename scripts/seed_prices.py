@@ -325,9 +325,19 @@ def _extract_econ_table(rows, content, full_name, default_unit):
 # 供应商表
 # ============================================================
 def parse_supplier_table(text, current_category):
-    """状态机:## 是大类,### 是子类,| col | col | 是表"""
+    """状态机:## 是大类,### 是子类,| col | col | 是表
+
+    v1.5 P0 修复 (R98):
+    - chunk 切分后 ## 标题是 chunk 边界(不在 chunk 内容里),
+      chunk 内的表头(## 通用采购渠道 / ## 采购周期参考)丢失 → section_name 永远 ""
+    - 修法 A: section_name 用 current_category 兜底初始化;同时
+      过滤键加 current_category 双键,即使 chunk 内没 ### 头也能识别
+      "采购周期参考" / "通用采购渠道" 段。
+    """
     rows = []
-    section_name = ''
+    # P0 修复 1: section_name 用 current_category 兜底,处理"## 通用采购渠道"
+    # / "## 采购周期参考" 这类 ## 标题作为 chunk 边界的场景
+    section_name = current_category or ''
     in_table = False
     for line in text.split('\n'):
         s = line.rstrip()
@@ -351,7 +361,12 @@ def parse_supplier_table(text, current_category):
             continue
         if not in_table: continue
         if re.match(r'^\d+$', cols[0]): continue
-        if section_name in ('采购建议', '采购周期参考', '通用采购渠道'): continue
+        # P0 修复 2: 双键过滤 — section_name 兜底 + current_category 直接命中
+        # 涵盖:1) ## 通用采购渠道/## 采购周期参考 作为 chunk 边界(无 ### 头)
+        #      2) ### 采购建议 在 chunk 内(原 filter 路径,保留兼容)
+        _BLACKLIST = ('采购建议', '采购周期参考', '通用采购渠道')
+        if section_name in _BLACKLIST or current_category in _BLACKLIST:
+            continue
         # 通用 5 列解析(不区分国产/进口,统一按 name/产品or国家/价格定位/特点/项目)
         # section_name 兼容:
         #   '国产品牌' / '进口品牌' / '进口品牌(中国可购)' / '铝单板' / '锌板/铜板' / ...
