@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS material_spec_prices (
     category        TEXT,                         -- '结构材料'/'幕墙'/'屋面'/'室内'/'门窗'/'装饰'/'设备'/'用量'
     spec            TEXT    DEFAULT NULL,         -- 'GRC 平板 15mm' / '国产花岗岩 25mm 火烧面'
     region_code     TEXT    DEFAULT 'CN-AVG',      -- 缺省全国平均(原 .md 区间都是全国均价)
-    brand_tier      TEXT    DEFAULT '中端' CHECK (brand_tier IN ('经济','中端','中高端','高端','旗舰')),  -- 经济/中端/中高端/高端/旗舰
+    brand_tier      TEXT    DEFAULT '中端' CHECK (brand_tier IN ('经济','中端','中高端','高端','旗舰')),  -- 5档 (经济<100 / 中端<500 / 中高端<1500 / 高端<3000 / 旗舰>=3000,元/m²均价),v1.7 R212 价格判档为主,文本"旗舰/进口"向上覆盖
     craft           TEXT    DEFAULT NULL,         -- 干挂/湿贴/光面/火烧/异形/...
     unit            TEXT    NOT NULL,              -- '元/m²' / '元/m³' / '元/t' / '元/块'
     unit_price_min  REAL    NOT NULL,             -- 区间下限

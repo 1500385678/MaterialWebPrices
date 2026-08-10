@@ -564,44 +564,93 @@ def allocate_code(category, existing_codes):
 
 
 # ============================================================
-# brand_tier 推断 (P0 R29)
+# brand_tier 推断 (P0 R29 启发式 → R212 价格区间判档)
 # ============================================================
-def infer_brand_tier(material_name, spec='', notes='', section=''):
-    """根据 material_name / spec / section / notes 推断品牌档位。
+def _tier_by_price(unit_price_avg, unit=None):
+    """v1.7 P0 修复 (R212): 用价格区间本身判档,放弃 cnt_money 启发式。
 
-    v1.6 P0 修复 (R29):
-    - 历史 295/295 行全为 '中端'(schema DEFAULT 兜底),前端"经济/中端/中高端/高端/旗舰" 5 档
-      实际只有 1 档可用,经济/旗舰档查询 404。
-    - 推断规则(优先级 高→低):
-      1. 旗舰/5x 💰  → 旗舰
-      2. (进口+高端) 或 4x 💰  → 高端
-      3. 进口 或 中高端 或 3x 💰  → 中高端
-      4. 高端字样  → 高端
-      5. 中端字样 或 1-2x 💰  → 中端
-      6. 经济字样  → 经济
-      7. 默认      → 中端
+    阈值参考市场价(元/m² 或 元/单位的均价):
+      - 经济    : avg < 100
+      - 中端    : 100 <= avg < 500
+      - 中高端  : 500 <= avg < 1500
+      - 高端    : 1500 <= avg < 3000
+      - 旗舰    : avg >= 3000
+
+    单位处理:
+      - '元/m²'     直接用
+      - '元/m³'     ÷100(20mm 厚板材 ÷50,简化为 ÷100 让混凝土/原木归"经济")
+      - '元/t'      不自动换算(钢板/钢筋密度差异大,直接按"中端"兜底)
+      - '元/块'/'元/樘'/'元/延米'/'元/m' → 视为 '中端' 兜底
+    """
+    if unit_price_avg is None or unit_price_avg <= 0:
+        return '中端'
+    u = (unit or '元/m²').strip()
+    if u in ('元/块', '元/樘', '元/延米', '元/m'):
+        return '中端'
+    if u == '元/t':
+        return '中端'  # 钢材价格不按 /m² 换算,默认中端
+    if u == '元/m³':
+        avg = unit_price_avg / 100
+    else:  # 元/m² 或未知单位
+        avg = unit_price_avg
+    if avg < 100:
+        return '经济'
+    if avg < 500:
+        return '中端'
+    if avg < 1500:
+        return '中高端'
+    if avg < 3000:
+        return '高端'
+    return '旗舰'
+
+
+# 文本档 → 价格档强度(数字越大越向上覆盖)
+_TIER_STRENGTH = {
+    '经济': 1, '中端': 2, '中高端': 3, '高端': 4, '旗舰': 5,
+}
+
+
+def _tier_by_text(material_name, spec='', notes='', section=''):
+    """R29 字样兜底:文本里出现"进口/旗舰/经济"等显式标记时**向上覆盖**价格档。
+
+    关键:文本"进口"只保证"至少中高端",但价格判档若更高(高端/旗舰)则以价格为准;
+    文本"旗舰"则强制顶档(避免价格档把它降级)。
     """
     text = f'{material_name or ""} {spec or ""} {notes or ""} {section or ""}'
-    cnt_money = text.count('💰')
-    if '旗舰' in text or cnt_money >= 5:
+    if '旗舰' in text:
         return '旗舰'
-    if '进口' in text and '高端' in text:
-        return '高端'
-    if cnt_money >= 4:
-        return '高端'
-    if '进口' in text:
-        return '中高端'
-    if '中高端' in text or cnt_money >= 3:
-        return '中高端'
+    if '进口' in text and ('高端' in text or '旗舰' in text):
+        return '旗舰'
     if '高端' in text:
         return '高端'
-    if '中端' in text:
-        return '中端'
+    if '进口' in text:
+        return '中高端'  # 仅做"下限",价格档更高就以价格为准
+    if '中高端' in text:
+        return '中高端'
     if '经济' in text:
         return '经济'
-    if cnt_money >= 1:
-        return '中端'
-    return '中端'
+    return None
+
+
+def infer_brand_tier(material_name='', spec='', notes='', section='',
+                     unit_price_avg=None, unit='元/m²'):
+    """v1.7 P0 修复 (R212): 主用价格区间判档,文本字样做"向上覆盖"兜底。
+
+    修复前 (v1.6 R29): 启发式靠 💰 数量 + 进口/高端 字样,实测 293/327=90% 落"中端"
+                       经济档 4 行(2 行重复)、旗舰档 6 行,前端经济/旗舰档查询 404。
+    修复后 (v1.7 R212): 改用 unit_price_avg 判 5 档
+                       (经济<100 / 中端<500 / 中高端<1500 / 高端<3000 / 旗舰>=3000);
+                       文本里的"旗舰/进口"等强信号做"向上覆盖",避免价格档反向降级。
+    """
+    price_tier = _tier_by_price(unit_price_avg, unit)
+    text_tier = _tier_by_text(material_name, spec, notes, section)
+    if text_tier is None:
+        return price_tier
+    # 取 max(价格档, 文本档),确保文本信号只"向上覆盖"不向下拉
+    p_s = _TIER_STRENGTH.get(price_tier, 2)
+    t_s = _TIER_STRENGTH.get(text_tier, 2)
+    winner = text_tier if t_s > p_s else price_tier
+    return winner
 
 
 # ============================================================
@@ -618,10 +667,12 @@ def insert_material_spec_prices(conn, rows, source_doc, category, default_price_
         avg = (pmin + pmax) / 2 if pmin is not None and pmax is not None else None
         # v1.6 P0 (R29): brand_tier 不再依赖 schema DEFAULT 兜底,先推断
         brand_tier = infer_brand_tier(
-            r.get('material_name', ''),
-            r.get('spec', ''),
-            r.get('notes', ''),
-            r.get('section', ''),
+            material_name=r.get('material_name', ''),
+            spec=r.get('spec', ''),
+            notes=r.get('notes', ''),
+            section=r.get('section', ''),
+            unit_price_avg=avg,
+            unit=r.get('unit', '元/m²'),
         )
         cur.execute('''
             INSERT INTO material_spec_prices
