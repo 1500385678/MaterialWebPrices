@@ -60,5 +60,6 @@ updated: 2026-08-09
 ---
 
 > 变更记录
+> - 2026-08-11 · 批 3 同步 价格库Control 修复记录;本目录 14 条子资源路径仍准确,无需调整 · materialwebprices Coder (批 3 02:00 夜间迭代)
 > - 2026-08-09 · 整段"## 跨 Defense 数据源"重写;14 条子资源位置从 `Defense/03_建筑材料/...` / `Defense/价格库/...` 改为 `Defense/06-Material/Mobile/PricesLib/...`;补 init_schema/prices.db/seed_prices.py 3 条技术资源 · materialwebprices Coder (批 3 夜间迭代)
 > - 2026-06-27 · 创建 SpaceLib/材料价格库 · 03_Architect

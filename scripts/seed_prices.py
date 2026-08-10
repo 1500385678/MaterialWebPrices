@@ -269,6 +269,12 @@ def parse_section_economic(text, source_doc, category='', default_unit='元/m²'
 def _extract_econ(rows, content, full_name, default_unit):
     """从经济属性 content 里抽 3 类价格(每档一行;P0 修复:findall 抓完所有 N 行;P1:多档 / 拆行)
 
+    v1.7 P1 修复 (R31 批 3 02:00):适配 4 子节格式
+    - 幕墙 8 大类每节 4 子节:材料单价-国产 / 材料单价-进口 / 施工造价 / 造价等级
+    - 造价等级是 💰 emoji 装饰,不入价
+    - 材料单价-国产/进口 拆为两段独立 regex,label 拼 (国产)/(进口) 后缀
+    - 兼容旧格式 **材料单价**(无 -X 后缀) → label = full_name
+
     v1.6 P1 修复 (R31):
     - 幕墙 8 大类每类有 2-4 档变体(国产/进口/规格/厚度),原 parser 只抓第一个价格区间,后面
       全部被吞(如 石材 "150~600 国产" / "300~2000 进口" 只入第 1 档)。
@@ -279,10 +285,13 @@ def _extract_econ(rows, content, full_name, default_unit):
     # P0 修复 1: regex 容忍冒号后空白([：:]+\s*)
     # P0 修复 2: re.findall 抓完所有 N 行
     # P1 修复 3: 单行内 / 或 ; 拆多档,每档一行
-    for price_type, base_pat in [
-        ('材料单价', r'\*\*材料单价\*\*[：:]+\s*([^\n]+)'),
-        ('施工造价', r'\*\*施工造价\*\*[：:]+\s*([^\n]+)'),
-        ('综合造价', r'\*\*综合造价\*\*[：:]+\s*([^\n]+)'),
+    # v1.7 修复 4: 支持 材料单价-国产 / 材料单价-进口 子节(label 拼 tier)
+    for price_type, tier_label, base_pat in [
+        ('材料单价', '国产', r'\*\*材料单价-国产\*\*[：:]+\s*([^\n]+)'),
+        ('材料单价', '进口', r'\*\*材料单价-进口\*\*[：:]+\s*([^\n]+)'),
+        ('材料单价', '',     r'\*\*材料单价\*\*[：:]+\s*([^\n]+)'),
+        ('施工造价', '',     r'\*\*施工造价\*\*[：:]+\s*([^\n]+)'),
+        ('综合造价', '',     r'\*\*综合造价\*\*[：:]+\s*([^\n]+)'),
     ]:
         matches = re.findall(base_pat, content)
         for idx, raw in enumerate(matches):
@@ -315,14 +324,16 @@ def _extract_econ(rows, content, full_name, default_unit):
                 pmin, pmax = parse_price_range(price_text)
                 if pmin is None:
                     continue
+                # v1.7:基础 label 拼 tier_label(国产/进口),4 子节格式
+                base_label = f'{full_name}（{tier_label}）' if tier_label else full_name
                 # 多档时:有变体拼变体,无变体用 #i 区分
                 if len(tiers) > 1:
                     if var:
-                        label = f'{full_name}（{var}）'
+                        label = f'{base_label}（{var}）'
                     else:
-                        label = f'{full_name} #{t_idx+1}'
+                        label = f'{base_label} #{t_idx+1}'
                 else:
-                    label = full_name
+                    label = base_label
                 unit = parse_unit(price_text) or default_unit
                 rows.append({
                     'material_name': label, 'spec': label,

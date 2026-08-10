@@ -39,5 +39,6 @@ _(暂无)_
 ---
 
 > 变更记录
+> - 2026-08-11 · 批 3 同步 价格库Control 修复记录;确认 本目录 14 条跨 Defense 数据源路径仍准确 · materialwebprices Coder (批 3 02:00 夜间迭代)
 > - 2026-08-09 · 修复路径错位(`SpaceLib/03_材料价格库/` → `Defense/06-Material/Mobile/PricesLib/03_材料价格库/`);上级 [[SpaceLib/SpaceLibControl]] → [[../00_DefenseControl]];平级表全部改 Defense 实际位置 · materialwebprices Coder (批 3 夜间迭代)
 > - 2026-06-27 · 创建 control 文件(军衔:团长) · 03_Architect

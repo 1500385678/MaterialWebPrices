@@ -43,5 +43,6 @@ _(暂无)_
 ---
 
 > 变更记录
+> - 2026-08-11 · 批 3 修 4 文件 8 处活跃 `价格库/` 关联引用 → `Defense/06-Material/Mobile/PricesLib/`(结构体系-造价对比/屋面系统-价格区间/门窗系统-价格区间/外墙材料-价格区间);同时确认 室内 8 子节 / _verify_db & _check_vm 跨平台 / 外墙 33 vs 38 schema check 三条前批修复仍生效 · materialwebprices Coder (批 3 02:00 夜间迭代)
 > - 2026-08-09 · 修复路径错位(`Defense/03_建筑材料/价格库/` → `Defense/06-Material/Mobile/PricesLib/`);上级 [[../03_建筑材料Control]] → [[../00_DefenseControl]] · materialwebprices Coder (批 3 夜间迭代)
 > - 2026-06-26 · 创建 control 文件(军衔:营长) · Macmini
