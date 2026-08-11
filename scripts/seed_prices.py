@@ -1,5 +1,17 @@
 """
 seed_prices.py · 把价格库目录里的 8 份 .md 入库到 prices.db
+v1.8 - 批 3 02:30 防退化加固 (R27 P0 复审 + 复测):
+  - 室内 8 段(2.1 乳胶漆 / 2.2 壁纸 / 2.3 木饰面 / 2.4 声学板 / 3.1 石膏板 /
+    3.2 铝板 / 3.3 矿棉板 / 3.4 木饰面吊顶)在 main() 末尾加 INDOOR_8_SECTIONS assert,
+    任一段 < 2 行 → raise 阻止入库
+  - 复测:parse_section_economic 对室内 .md 抽 44 行,8 段全部命中,无丢 50%+
+  - 顶部 docstring 升级到 v1.8 标记,保留 v1.6/v1.7 历史供 git blame 追溯
+  - 不动 v1.6 P0 h3 fallback / v1.6 P0 findall / v1.7 P1 多档 / 或 ; 拆分的代码本身
+    (这些 R27 + R31 已 fix,本次只补"防退化"的回归断言,避免后人误改回退到 v1.1)
+
+v1.7 - R31 P1 修复 (批 3 02:00):_extract_econ 支持 4 子节(材料单价-国产/进口 + 施工造价 + 造价等级)
+v1.6 - R27 P0 修复 + R28 P0 修复 + R29 P0 修复 (批 3 02:00):详见各函数 docstring
+v1.5 - 批 3:加 section_blacklist(快速查表/常见问题/关联知识/核心要点) + BASE 路径 assert
 v1.2 - 加严格 schema 检查:
   - parse_simple_table 同表所有行 col_count 必须一致,不一致 raise
   - 修复 v1.1 解析漂移(外墙 33 vs 38: 同档 price_col 跳变导致)
@@ -796,6 +808,34 @@ def main():
     n = insert_material_spec_prices(conn, rows, DOCS['室内材料-价格区间.md'][0], '室内')
     summary['室内材料-价格区间'] = n
     print(f'[seed] 室内(段式): {n} 行')
+    # v1.8 R27 防退化 assert:室内 8 段(2.1/2.2/2.3/2.4/3.1/3.2/3.3/3.4)必须全部有数据,
+    # 任一段 < 2 行 = parse_section_economic 退回到 v1.1 段式,直接 raise 阻止入库,
+    # 避免前端方案造价查询"丢 50%+ 室内数据"的 P0 复发
+    INDOOR_8_SECTIONS = [
+        ('2.1 乳胶漆',           '2.1'),
+        ('2.2 壁纸/壁布',         '2.2'),
+        ('2.3 木饰面（室内）',     '2.3'),
+        ('2.4 声学板（吸音板）',   '2.4'),
+        ('3.1 石膏板吊顶',         '3.1'),
+        ('3.2 铝板/铝方通吊顶',    '3.2'),
+        ('3.3 矿棉板吊顶',         '3.3'),
+        ('3.4 木饰面吊顶',         '3.4'),
+    ]
+    section_counts = {label: 0 for label, _ in INDOOR_8_SECTIONS}
+    for r in rows:
+        for label, key in INDOOR_8_SECTIONS:
+            if key in (r.get('section') or '') or key in (r.get('material_name') or ''):
+                section_counts[label] += 1
+                break
+    failing = [(label, cnt) for label, cnt in section_counts.items() if cnt < 2]
+    if failing:
+        raise ValueError(
+            f'室内段式解析退化(R27 P0 复发检测):8 段期望 ≥ 2 行/段,实际 '
+            + ', '.join(f'{label}={cnt}行' for label, cnt in failing)
+            + '。parse_section_economic 可能退回到 v1.1(只对 h4 含"经济属性"标题的段抽取)。'
+            + '修复:确认 h3 fallback(h3_content_no_h4 = h4_pat.sub("", h3_content); _extract_econ(rows, h3_content_no_h4, ...)) 还在。'
+        )
+    print(f'[seed] 室内 8 段防退化 assert OK: ' + ', '.join(f'{label}={cnt}' for label, cnt in section_counts.items()))
 
     # 4. 屋面系统-价格区间.md (3 列:做法/综合造价/工艺与备注)
     text = (BASE / '屋面系统-价格区间.md').read_text(encoding='utf-8')
