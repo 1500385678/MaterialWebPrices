@@ -81,12 +81,32 @@ def parse_price_range(s):
     return (None, None)
 
 
-def parse_unit(s):
-    if not s: return ''
-    s = str(s).replace(' ', '')
-    m = re.search(r'元/(\S+)', s)
-    if m: return '元/' + m.group(1)
-    return s
+def parse_unit(s, default='元/m²'):
+    """
+    提取单位,要求严格"元/XXX" 形式。
+    三道防线(R282 P0 修复):
+      1) 行首必须以"元/"开头 — 否则直接返回 default("元/m²"),不返回 raw 串
+         (历史 bug: "55-80" / "水泥" / "15-25%" 都被原样入库,污染 unit 字段)
+      2) 后缀不允许含数字/百分号/斜杠 — 违反就 fallback default
+         (历史 bug: "0.05-0.10" / "15-25%" / "钢筋/型钢" 都被原样入库)
+         允许纯中文/拉丁/括号等"单位"字符:桶/组/套/点/台/m(延米)
+      3) 后缀必须 ≥1 个字符 — "元/" 空捕获 fallback default
+    """
+    if not s: return default
+    s = str(s).replace(' ', '').strip()
+    if not s.startswith('元/'):
+        return default
+    m = re.match(r'元/(\S+)$', s)
+    if not m:
+        return default
+    suffix = m.group(1)
+    if not suffix:
+        return default
+    # 防线 2: 后缀含数字/百分号/斜杠 → 拒绝
+    # 注:允许中文(桶/组/套/点/台/延米),但不允许 "/" (分割符,表示"多个材料"非单位)
+    if re.search(r'[\d%/]', suffix):
+        return default
+    return '元/' + suffix
 
 
 # ============================================================
@@ -201,6 +221,9 @@ def parse_simple_table(text, source_doc, category='',
         material_name = cols[name_col] if name_col < len(cols) else ''
         spec = cols[spec_col] if spec_col is not None and spec_col < len(cols) else material_name
         if has_unit_col and unit_col < len(cols):
+            # R282 P0 修复:parse_unit 现在已内置 default='元/m²' 兜底 + 三道防线
+            # (元/ 前缀要求 + 后缀字符过滤 + 空捕获),不需要外层再 or '元/m²'。
+            # 但保留或逻辑作为最后兜底,防御 parse_unit 未来被改回 raw 行为。
             unit = parse_unit(cols[unit_col]) or '元/m²'
             price_text = cols[price_col] if price_col < len(cols) else ''
         else:
@@ -767,9 +790,18 @@ def main():
     summary = {}
 
     # 1. 材料价格总库-原始数据.md
+    # R282 P0 修复:section_blacklist 加 "用量估算"(h2 "5. 主要材料用量估算指标")
+    #   和 "风险提示"(h2 "6. 材料价格波动风险提示")—
+    #   5.x 用量估算段(每 m² 建筑面积材料用量)是数量指标,不是价格
+    #   6 风险提示段(波动幅度 ±15-25%)也是数量指标,不是价格
+    #   二者表的"价格列"实际是"住宅列",与 price_col=2 错位,导致 22 行 unit 污染
+    #   另加 "用量" 兜底,捕获 h3 子段(5.1/5.2/5.3 结构/外装/内装材料用量)
+    #   这些子段 current_section 是 h3 标题,不包含"用量估算"但包含"用量"
     text = (BASE / '材料价格总库-原始数据.md').read_text(encoding='utf-8')
     rows = parse_simple_table(text, DOCS['材料价格总库-原始数据.md'][0],
-                              name_col=0, spec_col=0, unit_col=1, price_col=2, has_unit_col=True)
+                              name_col=0, spec_col=0, unit_col=1, price_col=2, has_unit_col=True,
+                              section_blacklist=('快速查表', '常见问题', '关联知识', '核心要点',
+                                                 '用量估算', '风险提示', '用量'))
     n = insert_material_spec_prices(conn, rows, DOCS['材料价格总库-原始数据.md'][0], '结构/装饰/设备', '材料单价')
     summary['材料价格总库-原始数据'] = n
     print(f'[seed] 原始数据: {n} 行')
