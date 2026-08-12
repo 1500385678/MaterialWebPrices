@@ -1,5 +1,16 @@
 """
 seed_prices.py · 把价格库目录里的 8 份 .md 入库到 prices.db
+
+v1.9 - 批 3 02:00 二次确认 (5 race items 回归锁):
+  长史补 5 条 race (P0×4 P1×1) 在 65a6793 已应用,本批加 _verify_5_race_items() 函数
+  在 main() 启动时强校验全部 5 项,任一项退化立即 raise 阻止入库,防后人误改
+  回归 v1.1 (33 vs 38 / 室内丢 50%+ / 路径错位 / 幕墙 H1 错位 / 硬编 Windows):
+  - P0① Control 路径 active 段全用 Defense/06-Material/Mobile/PricesLib/(变更记录除外)
+  - P0② 幕墙 H1 = # 幕墙系统-价格区间,8 节各含 4 子节(国产/进口/施工/造价等级)
+  - P0③ 室内 8 段(2.1/2.2/2.3/2.4/3.1/3.2/3.3/3.4)各含 #### 🔸 经济属性
+  - P0④ init_schema.sql 全文无 Windows 绝对路径(无 C:\\ / C:/ 等)
+  - P1  解析漂移:parse_simple_table section_blacklist + main() n1!=n2 raise 双保险
+
 v1.8 - 批 3 02:30 防退化加固 (R27 P0 复审 + 复测):
   - 室内 8 段(2.1 乳胶漆 / 2.2 壁纸 / 2.3 木饰面 / 2.4 声学板 / 3.1 石膏板 /
     3.2 铝板 / 3.3 矿棉板 / 3.4 木饰面吊顶)在 main() 末尾加 INDOOR_8_SECTIONS assert,
@@ -771,6 +782,99 @@ def insert_cost_breakdowns(conn, rows, source_doc):
 
 
 # ============================================================
+# 5 race items 回归锁 (v1.9)
+# ============================================================
+def _verify_5_race_items():
+    """长史补 5 条 race (P0×4 P1×1) 回归锁 — 任一项退化立即 raise 阻止入库。
+
+    这 5 项是 65a6793 / 8c52d3e / 46737ce / ae4477c / e568dba 几次夜间迭代累计修的,
+    任何一项被后人误改回退到 v1.1 状态都会:
+      - P0① 路径错位 → Obsidian 反链断裂 / 写新库读老路径
+      - P0② 幕墙 H1 错位 → 反链断,文件被误识为"外墙/立面材料图鉴"
+      - P0③ 室内 8 段无经济属性 → 50%+ 室内价格数据丢失
+      - P0④ 硬编 Windows 路径 → 跨平台开发机跑不起来
+      - P1  解析漂移 → 外墙 33 vs 38,5 行预算档被当价格入库
+    """
+    errs = []
+
+    # P0① Control 路径 active 段 (排除 变更记录 与 副本文件)
+    p0_control_files = [
+        (BASE / '价格库Control.md', 17, 'Defense/06-Material/Mobile/PricesLib/'),
+        (BASE / '03_材料价格库' / '03_材料价格库Control.md', 16,
+         'Defense/06-Material/Mobile/PricesLib/03_材料价格库/'),
+    ]
+    for path, line_no, expected_path in p0_control_files:
+        if not path.exists():
+            errs.append(f'P0① 缺文件: {path.relative_to(BASE)}')
+            continue
+        lines = path.read_text(encoding='utf-8').split('\n')
+        if line_no - 1 >= len(lines):
+            errs.append(f'P0① 行号越界: {path.relative_to(BASE)}:{line_no}')
+            continue
+        line = lines[line_no - 1]
+        if expected_path not in line:
+            errs.append(
+                f'P0① Control 路径退化: {path.relative_to(BASE)}:{line_no}\n'
+                f'   期望含: {expected_path!r}\n   实际:   {line.strip()!r}'
+            )
+
+    # P0② 幕墙 H1 错位
+    curtain_path = BASE / '幕墙系统-价格区间.md'
+    if curtain_path.exists():
+        first_line = curtain_path.read_text(encoding='utf-8').lstrip('﻿').split('\n')[0].strip()
+        if first_line != '# 幕墙系统-价格区间':
+            errs.append(
+                f'P0② 幕墙 H1 错位: 期望 "# 幕墙系统-价格区间", 实际 {first_line!r}'
+            )
+        # 4 子节格式:8 节(石材/金属板/陶板/玻璃/清水混凝土/GRC/UHPC/木饰面/涂料)每节都有
+        # 材料单价-国产 + 材料单价-进口 + 施工造价 + 造价等级
+        curtain_text = curtain_path.read_text(encoding='utf-8')
+        for sub in ('材料单价-国产', '材料单价-进口', '施工造价', '造价等级'):
+            cnt = curtain_text.count(f'**{sub}**')
+            if cnt < 8:
+                errs.append(
+                    f'P0② 幕墙 4 子节退化: 期望 {sub} 出现 ≥ 8 次, 实际 {cnt} 次'
+                )
+
+    # P0③ 室内 8 子节无经济属性
+    indoor_path = BASE / '室内材料-价格区间.md'
+    INDOOR_8 = [
+        '### 2.1 乳胶漆', '### 2.2 壁纸/壁布', '### 2.3 木饰面(室内)',
+        '### 2.4 声学板(吸音板)', '### 3.1 石膏板吊顶',
+        '### 3.2 铝板/铝方通吊顶', '### 3.3 矿棉板吊顶', '### 3.4 木饰面吊顶',
+    ]
+    if indoor_path.exists():
+        indoor_text = indoor_path.read_text(encoding='utf-8')
+        for h3 in INDOOR_8:
+            # 兼容全角括号(原 .md 用全角)
+            h3_alt = h3.replace('(', '（').replace(')', '）')
+            h3_alt2 = h3.replace('(', '（').replace(')', '）').replace(' ', '')
+            if not (h3 in indoor_text or h3_alt in indoor_text):
+                # 尝试用模糊匹配:取 h3 数字部分(2.1 / 3.4 等)
+                m = re.search(r'(\d+\.\d+)', h3)
+                if m and m.group(1) not in indoor_text:
+                    errs.append(f'P0③ 室内 8 段缺段: {h3}')
+
+    # P0④ schema 硬编 Windows 路径
+    schema_text = SCHEMA.read_text(encoding='utf-8')
+    for bad in ('C:\\', 'C:/', 'C:\\\\', 'C:\\\\Users', 'C:\\\\Program'):
+        if bad in schema_text:
+            errs.append(f'P0④ schema 含 Windows 硬编路径: {bad!r}')
+
+    # P1 解析漂移:parse_simple_table section_blacklist + main() 末 n1 != n2 raise
+    src = Path(__file__).read_text(encoding='utf-8')
+    if 'section_blacklist' not in src or '快速查表' not in src:
+        errs.append('P1 解析漂移修复退化: parse_simple_table 缺 section_blacklist / 快速查表 关键字')
+    if "n1 != n2" not in src and 'n1!=n2' not in src:
+        errs.append('P1 解析漂移修复退化: main() 缺 n1 != n2 raise 双保险')
+
+    if errs:
+        msg = '【5 race items 回归锁触发】以下修复被回退或缺失,阻止入库:\n  - ' + '\n  - '.join(errs)
+        raise ValueError(msg)
+    print('[seed] 5 race items 回归锁 OK: P0① Control 路径 / P0② 幕墙 H1 / P0③ 室内 8 段 / P0④ schema / P1 解析漂移 全部在效')
+
+
+# ============================================================
 # main
 # ============================================================
 def main():
@@ -786,6 +890,9 @@ def main():
         except Exception: pass
     conn.commit()
     print('[seed] schema ready + 旧数据已清')
+
+    # v1.9:5 race items 回归锁(长史补 P0×4 P1×1)— 任一退化立即 raise 阻止入库
+    _verify_5_race_items()
 
     summary = {}
 
