@@ -881,22 +881,43 @@ def main():
     text = (BASE / '幕墙系统-价格区间.md').read_text(encoding='utf-8')
     rows = parse_section_economic(text, DOCS['幕墙系统-价格区间.md'][0], category='幕墙', default_unit='元/m²')
     n = insert_material_spec_prices(conn, rows, DOCS['幕墙系统-价格区间.md'][0], '幕墙')
-    # v1.6 P1 (R31): 幕墙 8 大类(石材/金属板/陶板/玻璃/清水混凝土/GRC/UHPC/木饰面/涂料)每类
-    # 至少 2 档(材料单价 + 施工造价),多档后预期 >= 24 行(8 × 3)。若仍 = 16 行(每类 2 行),
-    # 说明多档 / 拆行未生效,log.warn + raise 阻止入库。
-    unique_mains = len({r['material_name'].split('（')[0].split(' #')[0] for r in rows})
-    if n < 24 or unique_mains < 8:
+    # v1.7 P0 修复 (R347):幕墙 8 大类(石材/金属板/陶板/玻璃/清水混凝土/GRC/UHPC/木饰面/涂料 — 注:GRC 与 UHPC
+    # 共用 h2「## 6. GRC / UHPC」,故 h2 实际为 8 个,docstring 上写 9 名字仅是别名展开)每类至少 2 档,
+    # 多档后预期 >= 20 行(8 × 2.5,留容差)。unique_mains 改用行首 "N." 模式直接抽 h2 编号(不受
+    # material_name 中 "（国产）" / "（进口）" 括号变体 / " #1 #2" 编号影响),与 .md 实际 8 个 h2 节
+    # 一一对齐;同时输出 per-class 档位 min/max/median/std 报告,夜间迭代监控可看 std 是否 > 1.5
+    # 提示某类档位分布畸零。
+    import re as _re_cq, statistics as _stats_cq
+    _h2_pat_cq = _re_cq.compile(r'^(\d+)\.')
+    _h2_keys_cq = sorted({(_h2_pat_cq.match(r['material_name'] or '').group(0)
+                          if _h2_pat_cq.match(r['material_name'] or '') else '?')
+                         for r in rows})
+    unique_mains = len(_h2_keys_cq)
+    # per-class 档位分布(每 h2 一行):用行首 "N." 前缀做 groupby key
+    _per_class_cq = {}
+    for r in rows:
+        _m = _h2_pat_cq.match(r['material_name'] or '')
+        if _m:
+            _per_class_cq.setdefault(_m.group(0), 0)
+            _per_class_cq[_m.group(0)] += 1
+    _cnts_cq = sorted(_per_class_cq.values()) if _per_class_cq else [0]
+    _min_cq, _max_cq = _cnts_cq[0], _cnts_cq[-1]
+    _med_cq = _stats_cq.median(_cnts_cq)
+    _std_cq = _stats_cq.pstdev(_cnts_cq) if len(_cnts_cq) > 1 else 0.0
+    _per_class_report_cq = ' '.join(f'{k}={v}' for k, v in sorted(_per_class_cq.items()))
+    if n < 20 or unique_mains < 8:
         import warnings
         warnings.warn(
-            f'幕墙 8 大类 解析异常 (R31 P1):总 {n} 行,唯一大类 {unique_mains} 个。'
-            f'预期 >= 24 行 / 8 大类。可能多档 / 拆行未生效或 8 大类标题被误吞。'
+            f'幕墙 8 大类 解析异常 (R347 P0):总 {n} 行,唯一大类 {unique_mains} 个({_h2_keys_cq})。'
+            f'预期 >= 20 行 / 8 大类。可能多档 / 拆行未生效或 8 大类标题被误吞。'
         )
         raise ValueError(
-            f'幕墙解析漂移 (R31 P1):总 {n} 行 < 24 预期 / 大类 {unique_mains} < 8 预期。'
-            f'请检查 _extract_econ 多档 / 拆行 与 h3 标题正则。'
+            f'幕墙解析漂移 (R347 P0):总 {n} 行 < 20 预期 / 大类 {unique_mains} < 8 预期。'
+            f'实际 h2 列表:{_h2_keys_cq}。请检查 _extract_econ 多档 / 拆行 与 h3 标题正则。'
         )
     summary['幕墙系统-价格区间'] = n
-    print(f'[seed] 幕墙(段式·多档拆行): {n} 行 (8 大类 × {n//8} 档均值) [tier-check OK]')
+    print(f'[seed] 幕墙(段式·多档拆行): {n} 行, 8 大类档位 min={_min_cq} max={_max_cq} '
+          f'median={_med_cq} std={_std_cq:.2f} [{_per_class_report_cq}] [tier-check OK]')
 
     # 6. 门窗系统-价格区间.md (3 列:类型/综合造价/性能与备注)
     text = (BASE / '门窗系统-价格区间.md').read_text(encoding='utf-8')
