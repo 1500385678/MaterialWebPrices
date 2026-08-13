@@ -157,6 +157,9 @@ def parse_simple_table(text, source_doc, category='',
     col_count = 0
     table_first_row_count = None   # v1.2: 记录表首数据行 col_count(剥序号后),用于 schema check
     table_index = 0                # v1.2: 调试用,标识是第几个表
+    table_unit = '元/m²'           # v2.0 (R412 P0 修复): 当前表表头单位,从表头 cell 提取
+                                   #   "综合造价(元/樘)" → table_unit='元/樘'
+                                   #   has_unit_col=False 路径用其兜底(防门窗 3/4 段元/樘被错存元/m²)
     lines = text.split('\n')
     for line in lines:
         raw = line.rstrip()
@@ -166,6 +169,7 @@ def parse_simple_table(text, source_doc, category='',
             current_section = s.lstrip('# ').strip()
             in_table = False
             table_first_row_count = None  # v1.2: 新章节,重置 schema 基线
+            table_unit = '元/m²'          # v2.0: 新章节,重置表头单位
             continue
         # v1.5: 黑名单章节内的所有行直接跳过(不更新 in_table/table_first_row_count,
         #       保持基线;但避免数据行污染 schema check)
@@ -173,10 +177,12 @@ def parse_simple_table(text, source_doc, category='',
             if not s.startswith('|'):
                 in_table = False
                 table_first_row_count = None
+                table_unit = '元/m²'
             continue
         if not s.startswith('|'):
             in_table = False
             table_first_row_count = None  # v1.2: 出表,重置
+            table_unit = '元/m²'         # v2.0: 出表,重置表头单位
             continue
         # 拆列
         cols = [c.strip() for c in s.split('|') if c.strip() != '']
@@ -198,6 +204,18 @@ def parse_simple_table(text, source_doc, category='',
                 col_count = len(cols)
                 table_first_row_count = None
                 table_index += 1
+                # v2.0 (R412 P0 修复):从表头 cell 扫"元/XX"单位
+                # 例: cols = ['类型', '综合造价(元/樘)', '性能与备注'] → table_unit='元/樘'
+                # 例: cols = ['类型', '综合造价(元/m²)', '性能与备注'] → table_unit='元/m²'
+                # 用 parse_unit(整行 join) 提取,过滤 "元/" 前缀要求;扫每个 cell 选第一个有效单位
+                _extracted_unit = ''
+                for _cell in cols:
+                    _m_unit = re.search(r'元/([\u4e00-\u9fffA-Za-z]+)', _cell)
+                    if _m_unit and _m_unit.group(1) not in ('m', 'm²'):
+                        _extracted_unit = '元/' + _m_unit.group(1)
+                        break
+                if _extracted_unit:
+                    table_unit = _extracted_unit
                 continue
             # 否则是数据行(没有表头分隔) - 也允许
             in_table = True
@@ -238,8 +256,10 @@ def parse_simple_table(text, source_doc, category='',
             unit = parse_unit(cols[unit_col]) or '元/m²'
             price_text = cols[price_col] if price_col < len(cols) else ''
         else:
-            # 从表头里识别 unit (e.g. "综合造价(元/m²)")
-            unit = '元/m²'
+            # v2.0 (R412 P0 修复):has_unit_col=False 路径用 table_unit 兜底
+            # 例: 门窗 3 段"入户门"表头"综合造价(元/樘)" → table_unit='元/樘' → 行 unit='元/樘'
+            # 例: 门窗 1 段"铝合金窗"表头"综合造价(元/m²)" → table_unit='元/m²' → 行 unit='元/m²'
+            unit = table_unit
             price_text = cols[price_col] if price_col < len(cols) else ''
         notes = cols[-1] if has_notes_col and len(cols) > max(price_col, unit_col) + 1 else ''
         pmin, pmax = parse_price_range(price_text)
@@ -1027,18 +1047,17 @@ def main():
           f'median={_med_cq} std={_std_cq:.2f} [{_per_class_report_cq}] [tier-check OK]')
 
     # 6. 门窗系统-价格区间.md (3 列:类型/综合造价/性能与备注)
+    # v2.0 (R412 P0 修复):parse_simple_table 已从表头 cell 提取 table_unit 兜底
+    # 1/2/5 段(元/m²)与 3/4 段(元/樘)自动正确分流,无需 main 段再次判断
     text = (BASE / '门窗系统-价格区间.md').read_text(encoding='utf-8')
     rows = parse_simple_table(text, DOCS['门窗系统-价格区间.md'][0],
                               name_col=0, spec_col=0, unit_col=1, price_col=1, has_unit_col=False)
-    # 调整 unit:表头里识别 元/樘 vs 元/m²
-    for r in rows:
-        if '元/樘' in r.get('spec', '') or r.get('unit') == '元/樘':
-            r['unit'] = '元/樘'
-        else:
-            r['unit'] = '元/m²'
     n = insert_material_spec_prices(conn, rows, DOCS['门窗系统-价格区间.md'][0], '门窗', '综合造价')
     summary['门窗系统-价格区间'] = n
-    print(f'[seed] 门窗: {n} 行')
+    # v2.0: 打印 unit 分流验证(3/4 段应为元/樘,1/2/5 段应为元/m²)
+    _door_unit = sum(1 for r in rows if r['unit'] == '元/樘')
+    _win_unit = sum(1 for r in rows if r['unit'] == '元/m²')
+    print(f'[seed] 门窗: {n} 行 (元/樘 {_door_unit} + 元/m² {_win_unit}) [R412 unit-fix OK]')
 
     # 7. 造价构成比例.md
     text = (BASE / '造价构成比例.md').read_text(encoding='utf-8')
